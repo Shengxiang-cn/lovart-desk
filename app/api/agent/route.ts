@@ -90,7 +90,7 @@ export async function POST(request: Request) {
     };
 
     if (model === DEFAULT_AGENT_MODEL) {
-      requestBody.temperature = 1.0;
+      requestBody.temperature = 0.6;
       requestBody.max_tokens = mode === "heavy" ? 8192 : 4096;
       requestBody.thinking =
         mode === "heavy" ? { type: "enabled" } : { type: "disabled" };

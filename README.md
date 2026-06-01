@@ -7,8 +7,9 @@ The app does not call an image generation API directly. The intended loop is:
 1. Generate or edit images in ChatGPT with your member quota.
 2. Drag the resulting images into this canvas.
 3. Circle, point, draw arrows, and add text notes on top of the image.
-4. Use the side Agent panel to turn the canvas state into the next edit prompt.
-5. Copy that prompt back to ChatGPT, or connect a third-party chat API in the API tab.
+4. Click images on the canvas to attach them to the side Agent context, or upload/paste/drop extra reference images directly into the chat composer.
+5. Use the side Agent panel to turn the selected images, uploaded references, and marked-up canvas into the next edit prompt.
+6. Copy that prompt back to ChatGPT, or connect a third-party chat API in the API tab.
 
 ## Research Decision
 

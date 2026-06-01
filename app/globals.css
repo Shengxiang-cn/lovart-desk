@@ -366,6 +366,16 @@ button {
   background: var(--panel);
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
 .composer textarea,
 .field input,
 .field textarea {
@@ -394,6 +404,96 @@ button {
 .composer-actions {
   display: flex;
   gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.attachment-tray {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid rgba(23, 110, 114, 0.18);
+  border-radius: 8px;
+  background: #f2f8f6;
+}
+
+.attachment-group {
+  display: grid;
+  gap: 6px;
+}
+
+.attachment-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #155c5f;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.attachment-label span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: white;
+  color: var(--accent);
+}
+
+.attachment-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 7px;
+}
+
+.attachment-thumb {
+  position: relative;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid rgba(23, 110, 114, 0.18);
+  border-radius: 7px;
+  background: white;
+}
+
+.attachment-thumb.canvas {
+  border-color: rgba(23, 110, 114, 0.42);
+}
+
+.attachment-thumb img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: var(--panel-2);
+}
+
+.attachment-thumb figcaption {
+  overflow: hidden;
+  padding: 4px 5px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  box-shadow: 0 4px 12px rgba(34, 28, 20, 0.16);
 }
 
 .settings {

@@ -8,6 +8,7 @@ import {
   Download,
   Eraser,
   ExternalLink,
+  ImagePlus,
   KeyRound,
   Loader2,
   MessageSquare,
@@ -15,7 +16,8 @@ import {
   RefreshCcw,
   Send,
   Sparkles,
-  Wand2
+  Wand2,
+  X
 } from "lucide-react";
 import type {
   AppState,
@@ -39,6 +41,15 @@ type ChatMessage = {
   id: string;
   role: ChatRole;
   content: string;
+};
+
+type ImageAttachment = {
+  id: string;
+  name: string;
+  dataUrl: string;
+  mimeType: string;
+  source: "canvas" | "upload";
+  elementId?: string;
 };
 
 type AgentMode = "heavy" | "fast";
@@ -86,6 +97,7 @@ const DEFAULT_SETTINGS: AgentSettings = {
 };
 
 const CAPTURE_IMMEDIATELY = "IMMEDIATELY";
+const MAX_AGENT_IMAGES = 8;
 
 function createId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -138,6 +150,25 @@ function describeElement(element: ExcalidrawElement, index: number) {
   return common;
 }
 
+function getImageFileId(element: ExcalidrawElement) {
+  if (element.type !== "image") {
+    return "";
+  }
+
+  return (
+    (element as ExcalidrawElement & { fileId?: string }).fileId ||
+    ""
+  );
+}
+
+function getImageTitle(element: ExcalidrawElement, fallback: string) {
+  const customData = (element as ExcalidrawElement & {
+    customData?: { title?: string };
+  }).customData;
+
+  return customData?.title || fallback;
+}
+
 function buildCanvasSummary(
   elements: readonly ExcalidrawElement[],
   appState: Partial<AppState> | null
@@ -153,6 +184,7 @@ function buildCanvasSummary(
     .filter(Boolean)
     .slice(0, 16);
   const selectedLines = selection.slice(0, 20).map(describeElement);
+  const selectedImages = selection.filter((element) => element.type === "image");
   const annotationCount =
     (counts.ellipse || 0) +
     (counts.arrow || 0) +
@@ -166,6 +198,7 @@ function buildCanvasSummary(
     `文字：${counts.text || 0}`,
     `标注/圈选/箭头/涂鸦：${annotationCount}`,
     `当前选中：${selection.length || 0}`,
+    `当前选中图片：${selectedImages.length || 0}`,
     textNotes.length ? `文字备注：\n${textNotes.map((text) => `- ${text}`).join("\n")}` : "",
     selectedLines.length
       ? `选中元素：\n${selectedLines.map((line) => `- ${line}`).join("\n")}`
@@ -267,6 +300,23 @@ function readAsDataUrl(file: File) {
   });
 }
 
+async function filesToAttachments(files: File[]) {
+  const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+  const attachments: ImageAttachment[] = [];
+
+  for (const file of imageFiles) {
+    attachments.push({
+      id: createId(),
+      name: file.name || "uploaded-image",
+      dataUrl: await readAsDataUrl(file),
+      mimeType: file.type || "image/png",
+      source: "upload"
+    });
+  }
+
+  return attachments;
+}
+
 function blobToDataUrl(blob: Blob) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -308,13 +358,25 @@ function buildAgentPrompt(options: {
   userIntent: string;
   canvasSummary: string;
   hasSnapshot: boolean;
+  attachments: ImageAttachment[];
 }) {
+  const attachmentLines = options.attachments.length
+    ? options.attachments.map((attachment, index) => {
+        const source =
+          attachment.source === "canvas" ? "画布选中图片" : "聊天上传图片";
+        return `- 图片 ${index + 1}: ${attachment.name}（${source}）`;
+      })
+    : [];
+
   return [
     `用户当前要求：${options.userIntent}`,
     "",
     options.hasSnapshot
       ? "我随消息附上了当前画布截图。截图里包含原图、参考图、圈选、箭头、文字备注和摆放关系，请以截图为主进行判断。"
       : "当前没有可用画布截图，请基于文字摘要判断；如果信息不足，请明确要求我补充截图或标注。",
+    attachmentLines.length
+      ? `我还附上了这些关键图片，请把它们作为优先上下文：\n${attachmentLines.join("\n")}`
+      : "没有额外附加的关键图片。",
     "",
     "画布结构化摘要：",
     options.canvasSummary,
@@ -328,23 +390,73 @@ function buildAgentPrompt(options: {
   ].join("\n");
 }
 
-function buildOutboundContent(prompt: string, snapshotDataUrl: string | null) {
-  if (!snapshotDataUrl) {
-    return prompt;
-  }
+function buildOutboundContent(
+  prompt: string,
+  snapshotDataUrl: string | null,
+  attachments: ImageAttachment[]
+) {
+  const imageParts: AgentContentPart[] = [];
 
-  return [
-    {
+  if (snapshotDataUrl) {
+    imageParts.push({
       type: "image_url",
       image_url: {
         url: snapshotDataUrl
       }
-    },
+    });
+  }
+
+  for (const attachment of attachments.slice(0, MAX_AGENT_IMAGES)) {
+    imageParts.push({
+      type: "image_url",
+      image_url: {
+        url: attachment.dataUrl
+      }
+    });
+  }
+
+  if (imageParts.length === 0) {
+    return prompt;
+  }
+
+  return [
+    ...imageParts,
     {
       type: "text",
       text: prompt
     }
   ] satisfies AgentContentPart[];
+}
+
+function selectedCanvasImageAttachments(options: {
+  elements: readonly ExcalidrawElement[];
+  appState: Partial<AppState> | null;
+  files: BinaryFiles;
+}): ImageAttachment[] {
+  const attachments: ImageAttachment[] = [];
+  const imageElements = selectedElements(options.elements, options.appState).filter(
+    (element) => element.type === "image"
+  );
+
+  imageElements.forEach((element, index) => {
+    const fileId = getImageFileId(element);
+    const file = fileId ? options.files[fileId] : null;
+
+    if (!file?.dataURL) {
+      return;
+    }
+
+    attachments.push({
+      id: `canvas-${element.id}`,
+      elementId: element.id,
+      name: getImageTitle(element, `canvas-image-${index + 1}`),
+      dataUrl: file.dataURL,
+      mimeType: file.mimeType || "image/png",
+      source: "canvas"
+    });
+  });
+
+  return attachments;
 }
 
 function getImageSize(src: string) {
@@ -426,6 +538,7 @@ function viewportToScenePoint(
 
 export function CreativeDesk() {
   const excalidrawRef = useRef<ExcalidrawImperativeAPI | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const saveTimer = useRef<number | null>(null);
   const elementsRef = useRef<readonly ExcalidrawElement[]>([]);
   const filesRef = useRef<BinaryFiles>({});
@@ -442,6 +555,7 @@ export function CreativeDesk() {
   const [toast, setToast] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [isDropActive, setIsDropActive] = useState(false);
+  const [draftAttachments, setDraftAttachments] = useState<ImageAttachment[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: createId(),
@@ -493,6 +607,21 @@ export function CreativeDesk() {
     [elements, appState]
   );
 
+  const selectedCanvasImages = useMemo(
+    () =>
+      selectedCanvasImageAttachments({
+        elements,
+        appState,
+        files
+      }),
+    [appState, elements, files]
+  );
+
+  const activeAttachments = useMemo(
+    () => [...selectedCanvasImages, ...draftAttachments],
+    [draftAttachments, selectedCanvasImages]
+  );
+
   const handleChange = useCallback(
     (
       nextElements: readonly ExcalidrawElement[],
@@ -537,6 +666,72 @@ export function CreativeDesk() {
     setToast(success);
   }, []);
 
+  const handleAttachmentPick = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const pickedFiles = Array.from(event.target.files || []);
+
+      if (!pickedFiles.length) {
+        return;
+      }
+
+      const attachments = await filesToAttachments(pickedFiles);
+      if (attachments.length) {
+        setDraftAttachments((prev) => [...prev, ...attachments]);
+        setToast(`${attachments.length} 张图片已加入聊天`);
+      }
+
+      event.target.value = "";
+    },
+    []
+  );
+
+  const addPickedAttachments = useCallback(async (pickedFiles: File[]) => {
+    const attachments = await filesToAttachments(pickedFiles);
+
+    if (attachments.length) {
+      setDraftAttachments((prev) => [...prev, ...attachments]);
+      setToast(`${attachments.length} 张图片已加入聊天`);
+    }
+  }, []);
+
+  const handleComposerPaste = useCallback(
+    async (event: React.ClipboardEvent<HTMLElement>) => {
+      const imageFiles = Array.from(event.clipboardData.files).filter((file) =>
+        file.type.startsWith("image/")
+      );
+
+      if (!imageFiles.length) {
+        return;
+      }
+
+      event.preventDefault();
+      await addPickedAttachments(imageFiles);
+    },
+    [addPickedAttachments]
+  );
+
+  const handleComposerDrop = useCallback(
+    async (event: React.DragEvent<HTMLElement>) => {
+      const imageFiles = Array.from(event.dataTransfer.files).filter((file) =>
+        file.type.startsWith("image/")
+      );
+
+      if (!imageFiles.length) {
+        return;
+      }
+
+      event.preventDefault();
+      await addPickedAttachments(imageFiles);
+    },
+    [addPickedAttachments]
+  );
+
+  const removeDraftAttachment = useCallback((id: string) => {
+    setDraftAttachments((prev) =>
+      prev.filter((attachment) => attachment.id !== id)
+    );
+  }, []);
+
   const handleCompose = useCallback(async () => {
     const brief = makeEditBrief(elementsRef.current, appStateRef.current, draft);
     setMessages((prev) => [
@@ -548,21 +743,31 @@ export function CreativeDesk() {
 
   const handleSend = useCallback(async () => {
     const text = draft.trim();
-    if (!text || isSending) {
+    const attachments = activeAttachments.slice(0, MAX_AGENT_IMAGES);
+    const intent =
+      text ||
+      (attachments.length
+        ? "请根据我附加或选中的图片，结合画布标注，给出下一步图片修改建议。"
+        : "");
+
+    if (!intent || isSending) {
       return;
     }
 
     const userMessage: ChatMessage = {
       id: createId(),
       role: "user",
-      content: text
+      content: attachments.length
+        ? `${intent}\n\n[已附带 ${attachments.length} 张图片]`
+        : intent
     };
     const nextMessages = [...messages, userMessage];
     setMessages(nextMessages);
     setDraft("");
+    setDraftAttachments([]);
 
     if (!settings.baseUrl || !settings.model) {
-      const brief = makeEditBrief(elementsRef.current, appStateRef.current, text);
+      const brief = makeEditBrief(elementsRef.current, appStateRef.current, intent);
       setMessages((prev) => [
         ...prev,
         {
@@ -593,9 +798,10 @@ export function CreativeDesk() {
       }
 
       const prompt = buildAgentPrompt({
-        userIntent: text,
+        userIntent: intent,
         canvasSummary,
-        hasSnapshot: Boolean(snapshotDataUrl)
+        hasSnapshot: Boolean(snapshotDataUrl),
+        attachments
       });
       const outboundMessages: AgentOutboundMessage[] = nextMessages
         .filter(
@@ -608,7 +814,7 @@ export function CreativeDesk() {
 
       outboundMessages[outboundMessages.length - 1] = {
         role: "user",
-        content: buildOutboundContent(prompt, snapshotDataUrl)
+        content: buildOutboundContent(prompt, snapshotDataUrl, attachments)
       };
 
       const response = await fetch("/api/agent", {
@@ -636,7 +842,7 @@ export function CreativeDesk() {
         setToast("已发送带标注画布给 Kimi 2.5");
       }
     } catch (error) {
-      const brief = makeEditBrief(elementsRef.current, appStateRef.current, text);
+      const brief = makeEditBrief(elementsRef.current, appStateRef.current, intent);
       setMessages((prev) => [
         ...prev,
         {
@@ -648,7 +854,7 @@ export function CreativeDesk() {
     } finally {
       setIsSending(false);
     }
-  }, [draft, isSending, messages, settings]);
+  }, [activeAttachments, draft, isSending, messages, settings]);
 
   const handleClear = useCallback(() => {
     if (!window.confirm("Clear the current canvas?")) {
@@ -895,7 +1101,7 @@ export function CreativeDesk() {
               </div>
               <div className="agent-mode-line">
                 {settings.mode === "heavy"
-                  ? "重模式：发送带标注画布截图 + Kimi 2.5 思考"
+                  ? `重模式：画布截图 + ${activeAttachments.length} 张关键图 + Kimi 2.5 思考`
                   : "快模式：仅发送文字摘要"}
               </div>
             </section>
@@ -908,7 +1114,72 @@ export function CreativeDesk() {
               ))}
             </section>
 
-            <div className="composer">
+            <div
+              className="composer"
+              onDragOver={(event) => {
+                if (
+                  Array.from(event.dataTransfer.items).some((item) =>
+                    item.type.startsWith("image/")
+                  )
+                ) {
+                  event.preventDefault();
+                }
+              }}
+              onDrop={handleComposerDrop}
+              onPaste={handleComposerPaste}
+            >
+              <input
+                accept="image/*"
+                className="visually-hidden"
+                multiple
+                onChange={handleAttachmentPick}
+                ref={attachmentInputRef}
+                type="file"
+              />
+              {selectedCanvasImages.length || draftAttachments.length ? (
+                <div className="attachment-tray">
+                  {selectedCanvasImages.length ? (
+                    <div className="attachment-group">
+                      <div className="attachment-label">
+                        画布选中图片
+                        <span>{selectedCanvasImages.length}</span>
+                      </div>
+                      <div className="attachment-list">
+                        {selectedCanvasImages.map((attachment) => (
+                          <figure className="attachment-thumb canvas" key={attachment.id}>
+                            <img alt={attachment.name} src={attachment.dataUrl} />
+                            <figcaption>{attachment.name}</figcaption>
+                          </figure>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {draftAttachments.length ? (
+                    <div className="attachment-group">
+                      <div className="attachment-label">
+                        聊天上传图片
+                        <span>{draftAttachments.length}</span>
+                      </div>
+                      <div className="attachment-list">
+                        {draftAttachments.map((attachment) => (
+                          <figure className="attachment-thumb" key={attachment.id}>
+                            <img alt={attachment.name} src={attachment.dataUrl} />
+                            <figcaption>{attachment.name}</figcaption>
+                            <button
+                              className="attachment-remove"
+                              onClick={() => removeDraftAttachment(attachment.id)}
+                              title="Remove image"
+                              type="button"
+                            >
+                              <X size={12} />
+                            </button>
+                          </figure>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <textarea
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
@@ -921,6 +1192,14 @@ export function CreativeDesk() {
               />
               <div className="composer-row">
                 <div className="composer-actions">
+                  <button
+                    className="icon-button"
+                    onClick={() => attachmentInputRef.current?.click()}
+                    title="Upload images"
+                    type="button"
+                  >
+                    <ImagePlus size={15} />
+                  </button>
                   <button
                     className="text-button"
                     onClick={handleCompose}
@@ -938,7 +1217,7 @@ export function CreativeDesk() {
                 </div>
                 <button
                   className="text-button primary"
-                  disabled={isSending || !draft.trim()}
+                  disabled={isSending || (!draft.trim() && activeAttachments.length === 0)}
                   onClick={handleSend}
                   type="button"
                 >
